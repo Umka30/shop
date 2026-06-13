@@ -73,12 +73,15 @@ jobs:
           SSH_HOST: ${{ secrets.EC2_HOST }}
           SSH_USER: ${{ secrets.EC2_USER }}
           DATABASE_URL: ${{ secrets.EC2_DATABASE_URL }}
+          TLS_IDENTIFIER: ${{ secrets.EC2_DOMAIN || secrets.EC2_HOST }}
+          LETSENCRYPT_EMAIL: ${{ secrets.LETSENCRYPT_EMAIL }}
         run: |
           set -Eeuo pipefail
           test -n "$SSH_PRIVATE_KEY"
           test -n "$SSH_HOST"
           test -n "$SSH_USER"
           test -n "$DATABASE_URL"
+          test -n "$TLS_IDENTIFIER"
 
           mkdir -p ~/.ssh
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
@@ -93,15 +96,15 @@ jobs:
           scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 docker-compose.yml "$SSH_USER@$SSH_HOST:$APP_DIR/docker-compose.yml"
           scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 deploy.env "$SSH_USER@$SSH_HOST:$APP_DIR/.env"
 
-          ssh -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" "APP_DIR='$APP_DIR' bash -s" <<'EOF'
+          ssh -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" "APP_DIR='$APP_DIR' TLS_IDENTIFIER='$TLS_IDENTIFIER' LETSENCRYPT_EMAIL='$LETSENCRYPT_EMAIL' bash -s" <<'EOF'
             set -Eeuo pipefail
 
             if ! command -v docker >/dev/null 2>&1; then
               sudo apt-get update
-              sudo apt-get install -y curl docker.io docker-compose-plugin
-            elif ! command -v curl >/dev/null 2>&1; then
+              sudo apt-get install -y curl docker.io docker-compose-plugin nginx snapd
+            elif ! command -v curl >/dev/null 2>&1 || ! command -v nginx >/dev/null 2>&1 || ! command -v snap >/dev/null 2>&1; then
               sudo apt-get update
-              sudo apt-get install -y curl
+              sudo apt-get install -y curl nginx snapd
             fi
 
             sudo systemctl enable --now docker
@@ -125,20 +128,68 @@ jobs:
             sudo $COMPOSE ps
 
             for attempt in {1..30}; do
-              if curl -fsS http://localhost/health >/dev/null; then
+              if curl -fsS http://127.0.0.1:4001/health >/dev/null; then
                 break
               fi
               sleep 2
             done
 
-            curl -fsS http://localhost/health
+            curl -fsS http://127.0.0.1:4001/health
+
+            sudo tee /etc/nginx/sites-available/shop >/dev/null <<NGINX
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name $TLS_IDENTIFIER;
+
+    client_max_body_size 10m;
+
+    location / {
+        proxy_pass http://127.0.0.1:4001;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+NGINX
+            sudo rm -f /etc/nginx/sites-enabled/default
+            sudo ln -sf /etc/nginx/sites-available/shop /etc/nginx/sites-enabled/shop
+            sudo nginx -t
+            sudo systemctl enable --now nginx
+            sudo systemctl reload nginx
+
+            if ! command -v certbot >/dev/null 2>&1 || ! certbot --help all 2>/dev/null | grep -q -- '--preferred-profile'; then
+              sudo snap install core || true
+              sudo snap refresh core || true
+              sudo snap install --classic certbot || sudo snap refresh certbot --classic
+              sudo ln -sf /snap/bin/certbot /usr/bin/certbot
+            fi
+
+            if [ -n "$LETSENCRYPT_EMAIL" ]; then
+              EMAIL_ARGS=(--email "$LETSENCRYPT_EMAIL")
+            else
+              EMAIL_ARGS=(--register-unsafely-without-email)
+            fi
+
+            if [[ "$TLS_IDENTIFIER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              sudo certbot --nginx --non-interactive --agree-tos --redirect --keep-until-expiring \
+                "${EMAIL_ARGS[@]}" --cert-name shop --ip-address "$TLS_IDENTIFIER" --preferred-profile shortlived
+            else
+              sudo certbot --nginx --non-interactive --agree-tos --redirect --keep-until-expiring \
+                "${EMAIL_ARGS[@]}" --cert-name shop -d "$TLS_IDENTIFIER"
+            fi
+
+            sudo systemctl list-timers 'snap.certbot.renew.timer' --no-pager || true
+            curl -fsS "https://$TLS_IDENTIFIER/health"
             rm -f /tmp/shop-docker-image.tar
             echo "Deployment completed successfully"
           EOF
 
       - name: Public smoke test
         env:
-          SSH_HOST: ${{ secrets.EC2_HOST }}
+          HTTPS_TARGET: ${{ secrets.EC2_DOMAIN || secrets.EC2_HOST }}
         run: |
           set -Eeuo pipefail
-          curl -fsS --retry 6 --retry-delay 5 "http://$SSH_HOST/health"
+          curl -fsS --retry 6 --retry-delay 5 "https://$HTTPS_TARGET/health"
