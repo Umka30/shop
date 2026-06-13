@@ -145,23 +145,23 @@ jobs:
             curl -fsS http://127.0.0.1:4001/health
 
             sudo tee /etc/nginx/sites-available/shop >/dev/null <<NGINX
-server {
-    listen 80 default_server;
-    listen [::]:80 default_server;
-    server_name ${TLS_IDENTIFIER:-_};
+          server {
+              listen 80 default_server;
+              listen [::]:80 default_server;
+              server_name ${TLS_IDENTIFIER:-_};
 
-    client_max_body_size 10m;
+              client_max_body_size 10m;
 
-    location / {
-        proxy_pass http://127.0.0.1:4001;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-}
-NGINX
+              location / {
+                  proxy_pass http://127.0.0.1:4001;
+                  proxy_http_version 1.1;
+                  proxy_set_header Host \$host;
+                  proxy_set_header X-Real-IP \$remote_addr;
+                  proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto \$scheme;
+              }
+          }
+          NGINX
             sudo rm -f /etc/nginx/sites-enabled/default
             sudo ln -sf /etc/nginx/sites-available/shop /etc/nginx/sites-enabled/shop
             sudo nginx -t
