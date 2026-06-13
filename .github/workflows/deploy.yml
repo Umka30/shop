@@ -73,15 +73,23 @@ jobs:
           SSH_HOST: ${{ secrets.EC2_HOST }}
           SSH_USER: ${{ secrets.EC2_USER }}
           DATABASE_URL: ${{ secrets.EC2_DATABASE_URL }}
-          TLS_IDENTIFIER: ${{ secrets.EC2_DOMAIN || secrets.EC2_HOST }}
+          EC2_DOMAIN: ${{ secrets.EC2_DOMAIN }}
           LETSENCRYPT_EMAIL: ${{ secrets.LETSENCRYPT_EMAIL }}
+          DUCKDNS_SUBDOMAIN: ${{ secrets.DUCKDNS_SUBDOMAIN }}
+          DUCKDNS_TOKEN: ${{ secrets.DUCKDNS_TOKEN }}
         run: |
           set -Eeuo pipefail
           test -n "$SSH_PRIVATE_KEY"
           test -n "$SSH_HOST"
           test -n "$SSH_USER"
           test -n "$DATABASE_URL"
-          test -n "$TLS_IDENTIFIER"
+
+          TLS_IDENTIFIER="$EC2_DOMAIN"
+          if [ -z "$TLS_IDENTIFIER" ] && [ -n "$DUCKDNS_SUBDOMAIN" ] && [ -n "$DUCKDNS_TOKEN" ]; then
+            TLS_IDENTIFIER="$DUCKDNS_SUBDOMAIN.duckdns.org"
+            update_response="$(curl -fsS "https://www.duckdns.org/update?domains=$DUCKDNS_SUBDOMAIN&token=$DUCKDNS_TOKEN&ip=$SSH_HOST")"
+            test "$update_response" = "OK"
+          fi
 
           mkdir -p ~/.ssh
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
@@ -140,7 +148,7 @@ jobs:
 server {
     listen 80 default_server;
     listen [::]:80 default_server;
-    server_name $TLS_IDENTIFIER;
+    server_name ${TLS_IDENTIFIER:-_};
 
     client_max_body_size 10m;
 
@@ -160,36 +168,45 @@ NGINX
             sudo systemctl enable --now nginx
             sudo systemctl reload nginx
 
-            if ! command -v certbot >/dev/null 2>&1 || ! certbot --help all 2>/dev/null | grep -q -- '--preferred-profile'; then
+            if [ -n "$TLS_IDENTIFIER" ]; then
               sudo snap install core || true
               sudo snap refresh core || true
-              sudo snap install --classic certbot || sudo snap refresh certbot --classic
+              if sudo snap list certbot >/dev/null 2>&1; then
+                sudo snap refresh certbot --classic || true
+              else
+                sudo snap install --classic certbot
+              fi
               sudo ln -sf /snap/bin/certbot /usr/bin/certbot
-            fi
 
-            if [ -n "$LETSENCRYPT_EMAIL" ]; then
-              EMAIL_ARGS=(--email "$LETSENCRYPT_EMAIL")
-            else
-              EMAIL_ARGS=(--register-unsafely-without-email)
-            fi
+              if [ -n "$LETSENCRYPT_EMAIL" ]; then
+                EMAIL_ARGS=(--email "$LETSENCRYPT_EMAIL")
+              else
+                EMAIL_ARGS=(--register-unsafely-without-email)
+              fi
 
-            if [[ "$TLS_IDENTIFIER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              sudo certbot --nginx --non-interactive --agree-tos --redirect --keep-until-expiring \
-                "${EMAIL_ARGS[@]}" --cert-name shop --ip-address "$TLS_IDENTIFIER" --preferred-profile shortlived
-            else
               sudo certbot --nginx --non-interactive --agree-tos --redirect --keep-until-expiring \
                 "${EMAIL_ARGS[@]}" --cert-name shop -d "$TLS_IDENTIFIER"
+
+              curl -fsS "https://$TLS_IDENTIFIER/health"
+            else
+              echo "No EC2_DOMAIN or DuckDNS secrets configured; HTTPS setup skipped."
             fi
 
-            sudo systemctl list-timers 'snap.certbot.renew.timer' --no-pager || true
-            curl -fsS "https://$TLS_IDENTIFIER/health"
             rm -f /tmp/shop-docker-image.tar
             echo "Deployment completed successfully"
           EOF
 
       - name: Public smoke test
         env:
-          HTTPS_TARGET: ${{ secrets.EC2_DOMAIN || secrets.EC2_HOST }}
+          SSH_HOST: ${{ secrets.EC2_HOST }}
+          EC2_DOMAIN: ${{ secrets.EC2_DOMAIN }}
+          DUCKDNS_SUBDOMAIN: ${{ secrets.DUCKDNS_SUBDOMAIN }}
         run: |
           set -Eeuo pipefail
-          curl -fsS --retry 6 --retry-delay 5 "https://$HTTPS_TARGET/health"
+          if [ -n "$EC2_DOMAIN" ]; then
+            curl -fsS --retry 6 --retry-delay 5 "https://$EC2_DOMAIN/health"
+          elif [ -n "$DUCKDNS_SUBDOMAIN" ]; then
+            curl -fsS --retry 6 --retry-delay 5 "https://$DUCKDNS_SUBDOMAIN.duckdns.org/health"
+          else
+            curl -fsS --retry 6 --retry-delay 5 "http://$SSH_HOST/health"
+          fi

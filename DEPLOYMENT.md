@@ -67,6 +67,23 @@ Use GitHub web interface or gh CLI:
 .\dev-tools\gh\bin\gh.exe secret set EC2_DATABASE_URL --body "postgresql://user:pass@host/db?sslmode=require"
 ```
 
+Optional HTTPS secrets:
+
+```powershell
+# Option A: your own domain, with an A record pointing to EC2_HOST
+.\dev-tools\gh\bin\gh.exe secret set EC2_DOMAIN --body "shop.example.com"
+.\dev-tools\gh\bin\gh.exe secret set LETSENCRYPT_EMAIL --body "admin@example.com"
+
+# Option B: DuckDNS
+.\dev-tools\gh\bin\gh.exe secret set DUCKDNS_SUBDOMAIN --body "your-duckdns-name"
+.\dev-tools\gh\bin\gh.exe secret set DUCKDNS_TOKEN --body "your-duckdns-token"
+.\dev-tools\gh\bin\gh.exe secret set LETSENCRYPT_EMAIL --body "admin@example.com"
+```
+
+When `EC2_DOMAIN` or DuckDNS secrets exist, GitHub Actions configures Nginx,
+requests a Let's Encrypt certificate with Certbot, redirects HTTP to HTTPS, and
+smoke-tests `/health` over HTTPS. `EC2_DOMAIN` takes precedence over DuckDNS.
+
 ### Step 4: Setup EC2 Instance (One-time)
 ```bash
 # On your local machine
