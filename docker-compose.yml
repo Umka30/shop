@@ -3,9 +3,9 @@ version: '3.9'
 services:
   shop:
     image: shop:latest
+    container_name: shop
     ports:
       - '80:4001'
-      - '4001:4001'
     environment:
       NODE_ENV: production
       PORT: 4001
