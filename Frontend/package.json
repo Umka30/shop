@@ -8,9 +8,10 @@
     "dev:all": "set \"PORT=4001\" && set \"VITE_API_BASE=http://localhost:4001\" && concurrently \"npm run server\" \"npm run dev\"",
     "dev-all": "npm run dev:all",
     "build": "vite build",
+    "build:prod": "NODE_ENV=production vite build",
     "preview": "vite preview",
     "server": "node --env-file=.env server/index.js",
-    "start": "concurrently \"npm run server\" \"npm run dev\""
+    "start": "NODE_ENV=production node --env-file=.env server/index.js"
   },
   "dependencies": {
     "bcrypt": "^6.0.0",

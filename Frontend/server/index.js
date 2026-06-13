@@ -10,10 +10,19 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+const isProduction = process.env.NODE_ENV === 'production';
 
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
+
+// Serve product images
 app.use('/images', express.static(path.join(__dirname, 'images')));
+
+// Serve frontend in production
+if (isProduction) {
+  const distPath = path.join(__dirname, '../dist');
+  app.use(express.static(distPath, { maxAge: '1d' }));
+}
 
 const DB_URL = process.env.DATABASE_URL || process.env.PG_CONNECTION_STRING;
 if (!DB_URL) {
@@ -370,6 +379,21 @@ app.delete('/api/products/:id', async (req, res) => {
   }
 });
 
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok' });
+});
+
+// SPA fallback - serve index.html for all non-API routes in production
+if (isProduction) {
+  app.get('*', (req, res) => {
+    if (!req.path.startsWith('/api')) {
+      res.sendFile(path.join(__dirname, '../dist/index.html'));
+    }
+  });
+}
+
 app.listen(process.env.PORT || 4001, () => {
   console.log('Server running on port', process.env.PORT || 4001);
+  console.log('Environment:', process.env.NODE_ENV || 'development');
 });

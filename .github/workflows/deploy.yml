@@ -1,0 +1,76 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: '--max-old-space-size=4096'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install frontend dependencies
+        run: |
+          cd Frontend
+          npm install
+      - name: Build frontend
+        run: |
+          cd Frontend
+          npm run build
+      - name: Create deployment artifact
+        run: |
+          mkdir -p artifact
+          cp -r Frontend/dist artifact/frontend-dist
+          cp -r Frontend/server artifact/server
+          cp -r Frontend/node_modules artifact/node_modules
+          cp Frontend/package.json artifact/package.json
+          cp Frontend/package-lock.json artifact/package-lock.json
+          cp Dockerfile artifact/Dockerfile
+          cp docker-compose.yml artifact/docker-compose.yml
+          cp .dockerignore artifact/.dockerignore
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shop-deploy-artifact
+          path: artifact
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: shop-deploy-artifact
+      - name: Deploy to AWS EC2
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.EC2_HOST }}
+          SSH_USER: ${{ secrets.EC2_USER }}
+          DATABASE_URL: ${{ secrets.EC2_DATABASE_URL }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H $SSH_HOST >> ~/.ssh/known_hosts 2>/dev/null || true
+          
+          # Copy deployment files
+          scp -o StrictHostKeyChecking=no -r ./* $SSH_USER@$SSH_HOST:/home/$SSH_USER/shop/
+          
+          # Deploy with Docker Compose
+          ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST <<'EOF'
+            cd /home/$SSH_USER/shop
+            # Create .env file from DATABASE_URL secret
+            echo "DATABASE_URL=${{ secrets.EC2_DATABASE_URL }}" > .env
+            NODE_ENV=production docker-compose up -d --build
+            echo "Deployment completed"
+          EOF
+
