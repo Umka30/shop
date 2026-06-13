@@ -24,21 +24,24 @@ jobs:
         run: |
           cd Frontend
           npm run build
+      - name: Build Docker image
+        run: |
+          docker build -t shop:latest .
+          docker save shop:latest -o docker-image.tar
+      - name: Upload Docker image
+        uses: actions/upload-artifact@v4
+        with:
+          name: shop-docker-image
+          path: docker-image.tar
       - name: Create deployment artifact
         run: |
           mkdir -p artifact
-          cp -r Frontend/dist artifact/frontend-dist
-          cp -r Frontend/server artifact/server
-          cp -r Frontend/node_modules artifact/node_modules
-          cp Frontend/package.json artifact/package.json
-          cp Frontend/package-lock.json artifact/package-lock.json
-          cp Dockerfile artifact/Dockerfile
           cp docker-compose.yml artifact/docker-compose.yml
           cp .dockerignore artifact/.dockerignore
-      - name: Upload artifact
+      - name: Upload deployment config
         uses: actions/upload-artifact@v4
         with:
-          name: shop-deploy-artifact
+          name: shop-deploy-config
           path: artifact
 
   deploy:
@@ -46,10 +49,14 @@ jobs:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
     steps:
-      - name: Download artifact
+      - name: Download Docker image
         uses: actions/download-artifact@v4
         with:
-          name: shop-deploy-artifact
+          name: shop-docker-image
+      - name: Download deployment config
+        uses: actions/download-artifact@v4
+        with:
+          name: shop-deploy-config
       - name: Deploy to AWS EC2
         env:
           SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
@@ -62,15 +69,26 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H $SSH_HOST >> ~/.ssh/known_hosts 2>/dev/null || true
           
-          # Copy deployment files
-          scp -o StrictHostKeyChecking=no -r ./* $SSH_USER@$SSH_HOST:/home/$SSH_USER/shop/
+          # Copy docker image and config to EC2
+          scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 docker-image.tar $SSH_USER@$SSH_HOST:/tmp/
+          scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 docker-compose.yml $SSH_USER@$SSH_HOST:/home/$SSH_USER/shop/
           
-          # Deploy with Docker Compose
+          # Load image and deploy
           ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST <<'EOF'
+            # Create .env file
+            echo "DATABASE_URL=$DATABASE_URL" > /home/$SSH_USER/shop/.env
+            
+            # Load Docker image
+            cd /tmp
+            docker load -i docker-image.tar
+            
+            # Deploy with docker-compose (no rebuild needed)
             cd /home/$SSH_USER/shop
-            # Create .env file from DATABASE_URL secret
-            echo "DATABASE_URL=${{ secrets.EC2_DATABASE_URL }}" > .env
-            NODE_ENV=production docker-compose up -d --build
-            echo "Deployment completed"
+            NODE_ENV=production docker-compose up -d
+            
+            # Cleanup
+            rm /tmp/docker-image.tar
+            
+            echo "Deployment completed successfully"
           EOF
 

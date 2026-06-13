@@ -2,9 +2,7 @@ version: '3.9'
 
 services:
   shop:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: shop:latest
     ports:
       - '4001:4001'
     environment:
