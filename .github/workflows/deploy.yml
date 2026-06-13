@@ -4,6 +4,11 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -16,6 +21,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: npm
+          cache-dependency-path: Frontend/package-lock.json
       - name: Install frontend dependencies
         run: |
           cd Frontend
@@ -64,31 +71,69 @@ jobs:
           SSH_USER: ${{ secrets.EC2_USER }}
           DATABASE_URL: ${{ secrets.EC2_DATABASE_URL }}
         run: |
+          set -Eeuo pipefail
+          test -n "$SSH_PRIVATE_KEY"
+          test -n "$SSH_HOST"
+          test -n "$SSH_USER"
+          test -n "$DATABASE_URL"
+
           mkdir -p ~/.ssh
-          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H $SSH_HOST >> ~/.ssh/known_hosts 2>/dev/null || true
-          
-          # Copy docker image and config to EC2
-          scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 docker-image.tar $SSH_USER@$SSH_HOST:/tmp/
-          scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 docker-compose.yml $SSH_USER@$SSH_HOST:/home/$SSH_USER/shop/
-          
-          # Load image and deploy
-          ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST <<'EOF'
-            # Create .env file
-            echo "DATABASE_URL=$DATABASE_URL" > /home/$SSH_USER/shop/.env
-            
-            # Load Docker image
-            cd /tmp
-            docker load -i docker-image.tar
-            
-            # Deploy with docker-compose (no rebuild needed)
-            cd /home/$SSH_USER/shop
-            NODE_ENV=production docker-compose up -d
-            
-            # Cleanup
-            rm /tmp/docker-image.tar
-            
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+          APP_DIR="/home/$SSH_USER/shop"
+          printf 'DATABASE_URL=%s\n' "$DATABASE_URL" > deploy.env
+
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$SSH_USER@$SSH_HOST" "mkdir -p '$APP_DIR'"
+          scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 docker-image.tar "$SSH_USER@$SSH_HOST:/tmp/shop-docker-image.tar"
+          scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 docker-compose.yml "$SSH_USER@$SSH_HOST:$APP_DIR/docker-compose.yml"
+          scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 deploy.env "$SSH_USER@$SSH_HOST:$APP_DIR/.env"
+
+          ssh -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" "APP_DIR='$APP_DIR' bash -s" <<'EOF'
+            set -Eeuo pipefail
+
+            if ! command -v docker >/dev/null 2>&1; then
+              sudo apt-get update
+              sudo apt-get install -y curl docker.io docker-compose-plugin
+            elif ! command -v curl >/dev/null 2>&1; then
+              sudo apt-get update
+              sudo apt-get install -y curl
+            fi
+
+            sudo systemctl enable --now docker
+
+            if docker compose version >/dev/null 2>&1; then
+              COMPOSE="docker compose"
+            elif command -v docker-compose >/dev/null 2>&1; then
+              COMPOSE="docker-compose"
+            else
+              sudo apt-get update
+              sudo apt-get install -y docker-compose-plugin
+              COMPOSE="docker compose"
+            fi
+
+            sudo docker load -i /tmp/shop-docker-image.tar
+
+            cd "$APP_DIR"
+            sudo $COMPOSE up -d --remove-orphans
+            sudo $COMPOSE ps
+
+            for attempt in {1..30}; do
+              if curl -fsS http://localhost/health >/dev/null; then
+                break
+              fi
+              sleep 2
+            done
+
+            curl -fsS http://localhost/health
+            rm -f /tmp/shop-docker-image.tar
             echo "Deployment completed successfully"
           EOF
 
+      - name: Public smoke test
+        env:
+          SSH_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          set -Eeuo pipefail
+          curl -fsS --retry 6 --retry-delay 5 "http://$SSH_HOST/health"

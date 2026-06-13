@@ -3,7 +3,7 @@ import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } fr
 import EmojiPicker from 'emoji-picker-react';
 import './App.css';
 
-const API_BASE = 'http://localhost:4001';
+const API_BASE = import.meta.env.VITE_API_BASE || '';
 const PLACEHOLDER = 'https://placehold.co/360x360/ffffff/222222?text=Product';
 function Header({ cartCount, wishCount, searchTerm, onSearch, onFavorites, onCart, onLogin, onLogout, onCatalog, auth }) {
   return (

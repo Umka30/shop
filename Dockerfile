@@ -5,8 +5,8 @@ WORKDIR /app
 # Copy package files
 COPY Frontend/package*.json ./
 
-# Install dependencies
-RUN npm install --production
+# Install production dependencies
+RUN npm ci --omit=dev
 
 # Copy server and built frontend
 COPY Frontend/server ./server
@@ -23,5 +23,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 # Expose port
 EXPOSE 4001
 
-# Start the server
-CMD ["node", "--env-file=.env", "server/index.js"]
+# Start the server. Environment is provided by Docker Compose.
+CMD ["node", "server/index.js"]
